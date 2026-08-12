@@ -1,0 +1,10 @@
+{
+  "name": "@rootz/sign",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Sign what you publish, and let anyone check it without asking you.",
+  "bin": { "rootz-sign": "./cli.mjs" },
+  "scripts": { "test": "node test.mjs" },
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/rootz-global/rootz-sign.git" }
+}
