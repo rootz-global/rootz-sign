@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify a signed document — Rootz</title>
+<meta name="description" content="Check that a document is unaltered and came from whoever controls its domain. Runs entirely in your browser.">
+<!--
+  verify.html — a single self-contained file. No build step, no framework, no
+  dependency on any server of ours.
+
+  THE POINT: verification happens in YOUR browser.
+    - the signature is checked locally with WebCrypto
+    - the public key is fetched from public DNS via Cloudflare's DNS-over-HTTPS,
+      not from us and not from the document being checked
+    - nothing is sent to Rootz
+
+  Save this file to your desktop and it keeps working. That is deliberate. A
+  verifier you have to ask permission to use is not a verifier, it is a service.
+-->
+<style>
+  :root {
+    --ink:#1a1a1a; --muted:#6b6b6b; --line:#e4e1d9; --paper:#faf9f6;
+    --ok:#1a7f4b; --bad:#b3261e; --warn:#8a6100; --accent:#c0532b;
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--paper); color:var(--ink); line-height:1.6;
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif }
+  .wrap { max-width:760px; margin:0 auto; padding:44px 22px 80px }
+  h1 { font-size:1.55rem; margin:0 0 6px }
+  .sub { color:var(--muted); margin:0 0 30px }
+  fieldset { border:1px solid var(--line); border-radius:10px; padding:18px; margin:0 0 20px; background:#fff }
+  legend { padding:0 8px; font-weight:600; font-size:.9rem; color:var(--muted) }
+  label { display:block; font-size:.86rem; color:var(--muted); margin:10px 0 4px }
+  input[type=url], textarea { width:100%; padding:9px 11px; border:1px solid var(--line);
+        border-radius:6px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.86rem; background:var(--paper) }
+  textarea { min-height:104px; resize:vertical }
+  button { padding:9px 18px; border:0; border-radius:6px; background:var(--ink); color:#fff;
+           font-size:.92rem; cursor:pointer; margin-top:14px }
+  button:disabled { opacity:.5; cursor:default }
+  .tabs { display:flex; gap:6px; margin-bottom:16px }
+  .tabs button { background:transparent; color:var(--muted); border:1px solid var(--line); margin:0 }
+  .tabs button[aria-selected=true] { background:var(--ink); color:#fff; border-color:var(--ink) }
+  .hide { display:none }
+  .verdict { border-radius:10px; padding:18px 20px; margin:22px 0 0; border-left:5px solid }
+  .verdict.pass { background:#f0f8f3; border-color:var(--ok) }
+  .verdict.partial { background:#fdf8ee; border-color:var(--warn) }
+  .verdict.fail { background:#fdf1f0; border-color:var(--bad) }
+  .verdict h2 { margin:0 0 6px; font-size:1.1rem }
+  ul.checks { list-style:none; padding:0; margin:18px 0 0 }
+  ul.checks li { display:flex; gap:11px; padding:10px 0; border-bottom:1px solid var(--line); font-size:.92rem }
+  .mark { flex:none; width:1.4em; font-weight:700 }
+  .mark.y { color:var(--ok) } .mark.n { color:var(--bad) } .mark.i { color:var(--warn) }
+  .cname { font-weight:600; min-width:9.5em; flex:none }
+  .cdetail { color:#444 }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:6px 16px; margin:20px 0 0; font-size:.88rem }
+  dt { color:var(--muted) } dd { margin:0; font-family:ui-monospace,Menlo,monospace; word-break:break-all }
+  .note { font-size:.85rem; color:var(--muted); margin-top:8px }
+  .how { margin-top:44px; padding-top:24px; border-top:1px solid var(--line); font-size:.9rem; color:#444 }
+  code { background:#f1efe9; padding:1px 5px; border-radius:3px; font-size:.85em }
+  a { color:var(--accent) }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Verify a signed document</h1>
+<p class="sub">Checks that a document is unaltered and was signed by whoever controls its domain. Everything happens in your browser.</p>
+
+<div class="tabs" role="tablist">
+  <button role="tab" id="tab-paste" aria-selected="true">Paste it</button>
+  <button role="tab" id="tab-url" aria-selected="false">Fetch by URL</button>
+</div>
+
+<form id="form-paste">
+  <fieldset>
+    <legend>Paste mode — nothing leaves your browser except a DNS lookup</legend>
+    <label for="doc">The document text, exactly as published</label>
+    <textarea id="doc" spellcheck="false" placeholder="Paste the article text here…"></textarea>
+    <label for="proof">Its proof (the <code>proof.json</code> contents)</label>
+    <textarea id="proof" spellcheck="false" placeholder='{ "@type": "RootzProof", … }'></textarea>
+    <button type="submit">Verify</button>
+    <p class="note">This mode is fully local. We never see the document.</p>
+  </fieldset>
+</form>
+
+<form id="form-url" class="hide">
+  <fieldset>
+    <legend>URL mode</legend>
+    <label for="url">Address of the signed document</label>
+    <input type="url" id="url" placeholder="https://example.com/article">
+    <label for="purl">Address of its proof <span style="opacity:.7">(optional — we will guess <code>.proof.json</code>)</span></label>
+    <input type="url" id="purl" placeholder="https://example.com/article.proof.json">
+    <button type="submit">Fetch and verify</button>
+    <p class="note">
+      A browser cannot fetch most other sites directly, so this mode asks our
+      server to retrieve the two files. The signature check and the DNS lookup
+      still happen here in your browser — but if you would rather we never
+      touched the document at all, use paste mode.
+    </p>
+  </fieldset>
+</form>
+
+<div id="out"></div>
+
+<div class="how">
+  <h3 style="margin:0 0 8px;font-size:1rem">How this works, so you can check our work</h3>
+  <p>Four things get checked, and each can fail independently:</p>
+  <ol>
+    <li><strong>Content unaltered.</strong> The signed region is normalised (line endings, trailing spaces, Unicode form) and hashed with SHA-256. That must equal the hash in the proof. Wording, punctuation and numbers are untouched by normalisation — if any of those changed, the hash changes.</li>
+    <li><strong>Key fetched independently.</strong> The public key is read from a DNS <code>TXT</code> record at <code>_ai-authority.&lt;domain&gt;</code> using Cloudflare's DNS-over-HTTPS. Using the key inside the document to check the document would prove nothing — a forger would simply include their own.</li>
+    <li><strong>Signature valid.</strong> Verified locally with WebCrypto. The signature covers the content hash together with the domain, key id and timestamp, so a valid signature cannot be lifted off one document and attached to another.</li>
+    <li><strong>Key authorised when signed.</strong> Checked against the validity window in DNS — at the moment of signing, never “is this key still valid today”. A key retired in 2028 signed perfectly good documents in 2026, and those must keep verifying.</li>
+  </ol>
+  <p><strong>What a pass does not tell you:</strong> nothing about whether the content is true, current, or any good. Provenance is not accuracy. It tells you who stood behind these exact words, and that they have not changed since.</p>
+  <p>The tool that produces these signatures is open: <a href="https://github.com/rootz-global/rootz-sign">rootz-global/rootz-sign</a>. This page is a single static file — save it and it still works.</p>
+</div>
+
+</div>
+
+<script>
+/* ── tabs ─────────────────────────────────────────────────────────────────── */
+const tabs = { paste: document.getElementById('tab-paste'), url: document.getElementById('tab-url') };
+const forms = { paste: document.getElementById('form-paste'), url: document.getElementById('form-url') };
+for (const k of Object.keys(tabs)) {
+  tabs[k].addEventListener('click', () => {
+    for (const j of Object.keys(tabs)) {
+      tabs[j].setAttribute('aria-selected', String(j === k));
+      forms[j].classList.toggle('hide', j !== k);
+    }
+    document.getElementById('out').innerHTML = '';
+  });
+}
+
+/* ── canonicalisation — must match lib/canonical.mjs exactly ───────────────
+   Any divergence here produces a false "content altered", which is the worst
+   possible bug in a verifier: it accuses an honest publisher of tampering. */
+function canonicalText(t) {
+  return String(t)
+    .normalize('NFC')
+    .replace(/\r\n?/g, '\n')
+    .split('\n').map(l => l.replace(/[ \t]+$/, '')).join('\n')
+    .replace(/^\n+/, '')
+    .replace(/\n+$/, '\n');
+}
+
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function extractScope(doc) {
+  const B = '<!--rootz:sign:begin-->', E = '<!--rootz:sign:end-->';
+  const i = doc.indexOf(B), j = doc.indexOf(E);
+  if (i !== -1 && j !== -1 && j > i) return doc.slice(i + B.length, j);
+  if (i !== -1 || j !== -1) throw new Error('Only one signing marker present — the signed region is ambiguous.');
+  return doc;
+}
+
+function signingPayload(p) {
+  return new TextEncoder().encode(
+    ['rootz-proof-v1',
+     'contentHash: ' + p.contentHash,
+     'domain: ' + p.domain,
+     'keyId: ' + p.keyId,
+     'signedAt: ' + p.signedAt].join('\n')
+  );
+}
+
+/* ── DNS over HTTPS — public resolver, not ours ────────────────────────────── */
+async function resolveKeyDns(domain, keyId) {
+  const name = '_ai-authority.' + domain;
+  const r = await fetch('https://cloudflare-dns.com/dns-query?name=' + encodeURIComponent(name) + '&type=TXT',
+                        { headers: { accept: 'application/dns-json' } });
+  if (!r.ok) throw new Error('DNS lookup failed (' + r.status + ')');
+  const j = await r.json();
+  for (const ans of (j.Answer || [])) {
+    const raw = String(ans.data || '').replace(/^"|"$/g, '').replace(/" "/g, '');
+    if (!raw.startsWith('v=rootz1')) continue;
+    const f = {};
+    for (const part of raw.split(';')) {
+      const [k, ...rest] = part.trim().split('=');
+      if (k) f[k] = rest.join('=');
+    }
+    if (keyId && f.k !== keyId) continue;
+    return { keyId: f.k, publicKey: f.p, notBefore: f.nb || null, notAfter: f.na || null, raw };
+  }
+  return null;
+}
+
+function b64ToBytes(b64) {
+  const s = atob(b64.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(s, c => c.charCodeAt(0));
+}
+
+async function verifySignature(pubB64, sigB64, payload) {
+  let key;
+  try {
+    key = await crypto.subtle.importKey('raw', b64ToBytes(pubB64), { name: 'Ed25519' }, false, ['verify']);
+  } catch (e) {
+    throw new Error('UNSUPPORTED');
+  }
+  return crypto.subtle.verify('Ed25519', key, b64ToBytes(sigB64), payload);
+}
+
+/* ── the check ─────────────────────────────────────────────────────────────── */
+async function runVerify(docText, proof) {
+  const checks = [];
+  const add = (name, state, detail) => checks.push({ name, state, detail });
+
+  if (!proof || proof['@type'] !== 'RootzProof') {
+    add('envelope', 'n', 'This is not a RootzProof. Nothing further can be checked.');
+    return { checks, proof: null };
+  }
+  add('envelope', 'y', 'RootzProof v' + proof.version);
+
+  // 1. content
+  let region;
+  try { region = extractScope(docText); }
+  catch (e) { add('content', 'n', e.message); return { checks, proof }; }
+
+  const hash = 'sha256:' + await sha256Hex(canonicalText(region));
+  const same = hash === proof.scope.contentHash;
+  add('content', same ? 'y' : 'n', same
+    ? 'The text hashes to exactly what was signed.'
+    : 'The text has changed since it was signed. Signed ' + proof.scope.contentHash + ', got ' + hash + '.');
+
+  // 2. key, from DNS — independent of the document
+  let dnsKey = null, dnsErr = null;
+  try { dnsKey = await resolveKeyDns(proof.signer.domain, proof.signer.keyId); }
+  catch (e) { dnsErr = e.message; }
+
+  let keyToUse = proof.signer.publicKey;
+  if (!dnsKey) {
+    add('key', 'n', dnsErr
+      ? 'Could not reach DNS (' + dnsErr + '), so the key could not be confirmed independently.'
+      : 'No key published at _ai-authority.' + proof.signer.domain + '. The key in the document is self-asserted and establishes nothing about who published it.');
+  } else if (dnsKey.publicKey !== proof.signer.publicKey) {
+    add('key', 'n', 'The key in DNS does not match the key in this document. Treat the document as unverified.');
+    return { checks, proof };
+  } else {
+    keyToUse = dnsKey.publicKey;
+    add('key', 'y', 'Key ' + dnsKey.keyId + ' confirmed in DNS at _ai-authority.' + proof.signer.domain + '.');
+  }
+
+  // 3. signature
+  try {
+    const ok = await verifySignature(keyToUse, proof.signature, signingPayload({
+      contentHash: proof.scope.contentHash,
+      domain: proof.signer.domain,
+      keyId: proof.signer.keyId,
+      signedAt: proof.signedAt,
+    }));
+    add('signature', ok ? 'y' : 'n', ok ? 'Signature is valid for this key.' : 'Signature does not verify.');
+  } catch (e) {
+    if (e.message === 'UNSUPPORTED') {
+      add('signature', 'i', 'This browser cannot check Ed25519 signatures. Try a current Chrome, Safari or Firefox — or verify from the command line with rootz-sign.');
+    } else {
+      add('signature', 'n', 'Signature check failed: ' + e.message);
+    }
+  }
+
+  // 4. validity AT SIGNING TIME
+  const nb = (dnsKey && dnsKey.notBefore) || proof.validity?.notBefore;
+  const na = (dnsKey && dnsKey.notAfter) || proof.validity?.notAfter;
+  const signedAt = new Date(proof.signedAt);
+  if (!nb && !na) {
+    add('authorised', 'i', 'No validity window is published, so this cannot be checked.');
+  } else {
+    const within = (!nb || signedAt >= new Date(nb)) && (!na || signedAt <= new Date(na));
+    add('authorised', within ? 'y' : 'n', within
+      ? 'The key was authorised when this was signed. Still true even if the key has since been retired.'
+      : 'Signed outside the window this key was authorised for (' + (nb || '—') + ' to ' + (na || '—') + ').');
+    if (na && new Date() > new Date(na)) {
+      add('note', 'i', 'This key expired on ' + na + '. That does not affect what it signed while it was valid.');
+    }
+  }
+
+  return { checks, proof };
+}
+
+/* ── rendering ─────────────────────────────────────────────────────────────── */
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
+
+function render({ checks, proof }) {
+  const failed = checks.some(c => c.state === 'n');
+  const informational = checks.some(c => c.state === 'i');
+  const cls = failed ? 'fail' : (informational ? 'partial' : 'pass');
+
+  let head, lead;
+  if (failed) {
+    head = 'Not verified';
+    lead = 'At least one check failed. Do not treat this document as coming from the named signer.';
+  } else if (informational) {
+    head = 'Partly verified';
+    lead = 'The signature holds, but something could not be established. See below.';
+  } else {
+    head = 'Verified';
+    const a = proof?.assurance;
+    lead = a ? a.establishes : 'The document is unaltered and signed.';
+  }
+
+  const rows = checks.map(c =>
+    '<li><span class="mark ' + c.state + '">' + (c.state === 'y' ? '✓' : c.state === 'n' ? '✗' : 'i') + '</span>' +
+    '<span class="cname">' + esc(c.name) + '</span>' +
+    '<span class="cdetail">' + esc(c.detail) + '</span></li>').join('');
+
+  let meta = '';
+  if (proof) {
+    meta = '<dl>' +
+      '<dt>signed by</dt><dd>' + esc(proof.signer.name || proof.signer.domain) + '</dd>' +
+      '<dt>domain</dt><dd>' + esc(proof.signer.domain) + '</dd>' +
+      '<dt>signed at</dt><dd>' + esc(proof.signedAt) + '</dd>' +
+      '<dt>key</dt><dd>' + esc(proof.signer.keyId) + ' (' + esc(proof.signer.keySource) + ')</dd>' +
+      '<dt>assurance</dt><dd>L' + esc(proof.assurance?.level) + ' &mdash; ' + esc(proof.assurance?.label) + '</dd>' +
+      '<dt>scope</dt><dd style="font-family:inherit">' + esc(proof.scope.description) + '</dd>' +
+      '</dl>';
+  }
+
+  const limits = (!failed && proof?.assurance)
+    ? '<p class="note" style="margin-top:16px"><strong>What this does not establish:</strong> ' +
+      esc(proof.assurance.doesNotEstablish) + ' And nothing at all about whether the content is accurate or current.</p>'
+    : '';
+
+  document.getElementById('out').innerHTML =
+    '<div class="verdict ' + cls + '"><h2>' + head + '</h2><p style="margin:0">' + esc(lead) + '</p></div>' +
+    '<ul class="checks">' + rows + '</ul>' + meta + limits;
+}
+
+function fail(msg) {
+  document.getElementById('out').innerHTML =
+    '<div class="verdict fail"><h2>Could not check</h2><p style="margin:0">' + esc(msg) + '</p></div>';
+}
+
+/* ── handlers ──────────────────────────────────────────────────────────────── */
+document.getElementById('form-paste').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const doc = document.getElementById('doc').value;
+  const raw = document.getElementById('proof').value.trim();
+  if (!doc.trim() || !raw) return fail('Both the document text and its proof are needed.');
+  let proof;
+  try { proof = JSON.parse(raw); } catch (err) { return fail('The proof is not valid JSON: ' + err.message); }
+  try { render(await runVerify(doc, proof)); } catch (err) { fail(err.message); }
+});
+
+document.getElementById('form-url').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = document.getElementById('url').value.trim();
+  if (!url) return;
+  const purl = document.getElementById('purl').value.trim() ||
+               url.replace(/\.[^./]+$/, '').replace(/\/$/, '') + '.proof.json';
+  try {
+    const r = await fetch('/api/verify-fetch?doc=' + encodeURIComponent(url) + '&proof=' + encodeURIComponent(purl));
+    if (!r.ok) throw new Error('Could not retrieve those URLs (' + r.status + ')');
+    const { document: doc, proof } = await r.json();
+    render(await runVerify(doc, proof));
+  } catch (err) {
+    fail(err.message + ' — you can always use paste mode instead, which needs no server at all.');
+  }
+});
+</script>
+</body>
+</html>
